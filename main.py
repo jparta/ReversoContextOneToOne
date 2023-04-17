@@ -16,7 +16,6 @@ import custom_logging
 
 
 # TODO
-#  - Remove lemmas consisting only of non-alphabetic characters
 #  - Save one-to-one translations to a file
 #  - Compare words against translations from the same part of speech
 #  - Give option to check whether word is already included in Anki deck
@@ -44,6 +43,22 @@ def check_one_to_one(
     return None
 
 
+def clean_up_text(text: str, source_nlp: stanza.Pipeline):
+    # Tokenize and lemmatize
+    all_lemmas: set[str] = set()
+    doc = source_nlp(text)
+    doc = cast(stanza.Document, doc)
+    for sentence in doc.sentences:
+        for word in sentence.words:
+            all_lemmas.add(word.lemma)
+    # Remove lemmas consisting only of non-alphabetic characters
+    clean_lemmas = set(lemma for lemma in all_lemmas if any(c.isalpha() for c in lemma))
+    logging.debug(
+        f"Words to translate: {' '.join(clean_lemmas)}", extra={"postfix": "\n"}
+    )
+    return clean_lemmas
+
+
 def get_words_from_context_sentences(
     context_api: ReversoContextAPI,
     source_nlp: stanza.Pipeline,
@@ -55,18 +70,8 @@ def get_words_from_context_sentences(
     limited_context_sentences = itertools.islice(context_sentences, sentence_count)
     for context_sentence in limited_context_sentences:
         all_text += context_sentence[0].text
-
-    # Tokenize and lemmatize
-    all_lemmas = set()
-    doc = source_nlp(all_text)
-    doc = cast(stanza.Document, doc)
-    for sentence in doc.sentences:
-        for word in sentence.words:
-            all_lemmas.add(word.lemma)
-    logging.debug(
-        f"Words to translate: {' '.join(all_lemmas)}", extra={"postfix": "\n"}
-    )
-    return all_lemmas
+    lemmas = clean_up_text(all_text, source_nlp)
+    return lemmas
 
 
 def report_progress(
