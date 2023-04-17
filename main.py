@@ -20,15 +20,23 @@ import custom_logging
 #  - Compare words against translations from the same part of speech
 #  - Give option to check whether word is already included in Anki deck
 #  - Analyze and visualize scraping progress
-#  - Add back translations to the pool of words to translate
-#  - Add a check for 1-to-1 translations in the other direction
+
+
+# (word, frequency), translation
+OneToOneRecord = tuple[tuple[str, int], str]
 
 
 def check_one_to_one(
-    original_word, top_translation, source_lang, target_lang
-) -> Translation | None:
-    # Returns the frequency of the top translation or None if the word does not have a 1-to-1 translation
+    original_word: str,
+    translation_strings: list[str],
+    source_lang: str,
+    target_lang: str,
+) -> OneToOneRecord | None:
+    # Returns a 1-to-1 translation record or None if the word does not have a 1-to-1 translation
     # Source and target languages have to be swapped
+    if not translation_strings:
+        return None
+    top_translation = translation_strings[0]
     reverso_context_api = ReversoContextAPI(
         source_text=top_translation,
         source_lang=target_lang,
@@ -39,7 +47,9 @@ def check_one_to_one(
         top_back_translation_object = back_translation_objects[0]
         top_back_translation = top_back_translation_object.translation
         if top_back_translation == original_word:
-            return top_back_translation_object
+            frequency = top_back_translation_object.frequency
+            record = ((original_word, frequency), top_translation)
+            return record
     return None
 
 
@@ -112,7 +122,7 @@ def run(
     # Each processed word has a key in a dictionary. The value is a list of Translation namedtuples.
     translations = {}
     # Note 1-to-1 translations
-    one_to_one_translations = []
+    one_to_one_translations: list[OneToOneRecord] = []
     # A pool of words is established
     words_to_translate = deque()
     # Words already scraped
@@ -137,20 +147,15 @@ def run(
         translations[current_word] = translation_objects
 
         # Check if the word has a 1-to-1 translation, and if so, add it to the list
-        top_translation = translation_strings[0] if translation_strings else None
-        found_one_to_one = False
-        if top_translation:
-            one_to_one_translation = check_one_to_one(
-                current_word, top_translation, source_lang, target_lang
-            )
-            if one_to_one_translation is not None:
-                frequency = one_to_one_translation.frequency
-                record = ((current_word, frequency), top_translation)
-                one_to_one_translations.append(record)
-                logging.info(f"1-to-1: {current_word} -> {top_translation}")
-                found_one_to_one = True
-        if not found_one_to_one:
+        record = check_one_to_one(
+            current_word, translation_strings, source_lang, target_lang
+        )
+        if record is None:
             logging.info(current_word)
+        else:
+            one_to_one_translations.append(record)
+            top_translation = record[1]
+            logging.info(f"1-to-1: {current_word} -> {top_translation}")
         logging.debug(one_to_one_translations)
 
         # Add new words to the pool
