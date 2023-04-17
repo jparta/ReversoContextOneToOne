@@ -1,18 +1,21 @@
 import itertools
 import time
 from collections import deque
+from typing import cast
 
+import stanza
 from reverso_api.context import ReversoContextAPI
+from stanza.pipeline.core import DownloadMethod
 
-# The aim is to find words which have a very clear 1-to-1 between the source and target languages.
+# The aim is to find words which have a 1-to-1 translation between the source and target languages.
 # Here, 1-to-1 translation means that both words are each other's most frequent translation.
 # The words to be translated are gathered from the context sentences of the words previously processed.
 
 
 # TODO
+#  - Use logging instead of print statements
 #  - Save one-to-one translations to a file
 #  - Compare words against translations from the same part of speech
-#  - Add only lemmatized words to the pool of words to translate
 #  - Add back translations to the pool of words to translate
 #  - Add a check for 1-to-1 translations in the other direction
 
@@ -36,29 +39,36 @@ def check_one_to_one(word, top_translation, source_lang, target_lang):
     return False
 
 
-def clean_up_words(words):
-    # Remove punctuation
-    words = [word.strip(",.?!") for word in words]
-    # Decapitalize
-    words = [word.lower() for word in words]
-    return words
-
-
-def get_words_from_context_sentences(context_api: ReversoContextAPI):
-    context_sentences = context_api.get_examples()
-    words = set()
+def get_words_from_context_sentences(
+    context_api: ReversoContextAPI,
+    source_nlp: stanza.Pipeline,
+) -> set[str]:
     # Get source language words from context sentences
+    all_text = ""
+    context_sentences = context_api.get_examples()
     sentence_count = 10
     limited_context_sentences = itertools.islice(context_sentences, sentence_count)
     for context_sentence in limited_context_sentences:
-        source_text = context_sentence[0].text
-        cleaned_words = clean_up_words(source_text.split())
-        words.update(cleaned_words)
-    # print(f"Words to translate: {' '.join(words)}\n")
-    return words
+        all_text += context_sentence[0].text
+
+    # Tokenize and lemmatize
+    all_lemmas = set()
+    doc = source_nlp(all_text)
+    doc = cast(stanza.Document, doc)
+    for sentence in doc.sentences:
+        for word in sentence.words:
+            all_lemmas.add(word.lemma)
+    # print(f"Words to translate: {' '.join(all_lemmas)}\n")
+    return all_lemmas
 
 
-def run(start_word, source_lang, target_lang, iteration_count):
+def run(
+    start_word: str,
+    source_lang: str,
+    target_lang: str,
+    iteration_count: int,
+    source_nlp: stanza.Pipeline,
+):
     print("Starting word: " + start_word)
     print()
 
@@ -98,8 +108,11 @@ def run(start_word, source_lang, target_lang, iteration_count):
             print(f"1-to-1: {current_word} -> {top_translation}")
 
         # Add new words to the pool
-        batch_of_words = get_words_from_context_sentences(context_api)
-        new_words = set(batch_of_words) - scraped_words
+        batch_of_words = get_words_from_context_sentences(
+            context_api,
+            source_nlp,
+        )
+        new_words = batch_of_words - scraped_words
         words_to_translate.extend(new_words)
         scraped_words.update(new_words)
 
@@ -123,4 +136,22 @@ if __name__ == "__main__":
     source_lang = "ru"
     target_lang = "en"
     iteration_count = 1000
-    run(start_word, source_lang, target_lang, iteration_count)
+    stanza_verbose = False
+
+    # initialize stanza using source language, without downloading when not necessary
+    print("Initializing NLP pipeline...")
+    source_nlp = stanza.Pipeline(
+        source_lang,
+        download_method=DownloadMethod.REUSE_RESOURCES,
+        verbose=stanza_verbose,
+    )
+    print("Done.\n")
+
+    # run with new parameter source_nlp
+    run(
+        start_word,
+        source_lang,
+        target_lang,
+        iteration_count,
+        source_nlp,
+    )
