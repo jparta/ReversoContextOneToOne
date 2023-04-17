@@ -5,7 +5,7 @@ from collections import deque
 from typing import cast
 
 import stanza
-from reverso_api.context import ReversoContextAPI
+from reverso_api.context import ReversoContextAPI, Translation
 from stanza.pipeline.core import DownloadMethod
 
 import custom_logging
@@ -16,16 +16,19 @@ import custom_logging
 
 
 # TODO
-#  - Include word frequency in output data
 #  - Remove lemmas consisting only of non-alphabetic characters
 #  - Save one-to-one translations to a file
 #  - Compare words against translations from the same part of speech
 #  - Give option to check whether word is already included in Anki deck
+#  - Analyze and visualize scraping progress
 #  - Add back translations to the pool of words to translate
 #  - Add a check for 1-to-1 translations in the other direction
 
 
-def check_one_to_one(word, top_translation, source_lang, target_lang):
+def check_one_to_one(
+    original_word, top_translation, source_lang, target_lang
+) -> Translation | None:
+    # Returns the frequency of the top translation or None if the word does not have a 1-to-1 translation
     # Source and target languages have to be swapped
     reverso_context_api = ReversoContextAPI(
         source_text=top_translation,
@@ -33,16 +36,12 @@ def check_one_to_one(word, top_translation, source_lang, target_lang):
         target_lang=source_lang,
     )
     back_translation_objects = list(reverso_context_api.get_translations())
-    back_translation_strings = [t.translation for t in back_translation_objects]
-    logging.debug(
-        f"Back translations for {top_translation}: {' '.join(back_translation_strings)}",
-        extra={"postfix": "\n"},
-    )
-    if back_translation_strings:
-        top_back_translation = back_translation_strings[0]
-        if top_back_translation == word:
-            return True
-    return False
+    if back_translation_objects:
+        top_back_translation_object = back_translation_objects[0]
+        top_back_translation = top_back_translation_object.translation
+        if top_back_translation == original_word:
+            return top_back_translation_object
+    return None
 
 
 def get_words_from_context_sentences(
@@ -108,7 +107,7 @@ def run(
     # Each processed word has a key in a dictionary. The value is a list of Translation namedtuples.
     translations = {}
     # Note 1-to-1 translations
-    one_to_one = {}
+    one_to_one_translations = []
     # A pool of words is established
     words_to_translate = deque()
     # Words already scraped
@@ -132,15 +131,22 @@ def run(
         )
         translations[current_word] = translation_objects
 
-        # Check if the word has a 1-to-1 translation
+        # Check if the word has a 1-to-1 translation, and if so, add it to the list
         top_translation = translation_strings[0] if translation_strings else None
-        if top_translation and check_one_to_one(
-            current_word, top_translation, source_lang, target_lang
-        ):
-            one_to_one[current_word] = top_translation
-            logging.info(f"1-to-1: {current_word} -> {top_translation}")
-        else:
+        found_one_to_one = False
+        if top_translation:
+            one_to_one_translation = check_one_to_one(
+                current_word, top_translation, source_lang, target_lang
+            )
+            if one_to_one_translation is not None:
+                frequency = one_to_one_translation.frequency
+                record = ((current_word, frequency), top_translation)
+                one_to_one_translations.append(record)
+                logging.info(f"1-to-1: {current_word} -> {top_translation}")
+                found_one_to_one = True
+        if not found_one_to_one:
             logging.info(current_word)
+        logging.debug(one_to_one_translations)
 
         # Add new words to the pool
         batch_of_words = get_words_from_context_sentences(
@@ -161,7 +167,7 @@ def run(
                 words_to_translate_count=len(words_to_translate),
                 scraped_words_count=len(scraped_words),
                 translations_count=len(translations),
-                one_to_one_count=len(one_to_one),
+                one_to_one_count=len(one_to_one_translations),
             )
         time.sleep(SLEEP_TIME)
 
