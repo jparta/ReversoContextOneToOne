@@ -1,4 +1,5 @@
 import itertools
+import logging
 import time
 from collections import deque
 from typing import cast
@@ -7,15 +8,19 @@ import stanza
 from reverso_api.context import ReversoContextAPI
 from stanza.pipeline.core import DownloadMethod
 
+import custom_logging
+
 # The aim is to find words which have a 1-to-1 translation between the source and target languages.
-# Here, 1-to-1 translation means that both words are each other's most frequent translation.
+# Here, a 1-to-1 translation means that both words are each other's most frequent translation.
 # The words to be translated are gathered from the context sentences of the words previously processed.
 
 
 # TODO
-#  - Use logging instead of print statements
+#  - Include word frequency in output data
+#  - Remove lemmas consisting only of non-alphabetic characters
 #  - Save one-to-one translations to a file
 #  - Compare words against translations from the same part of speech
+#  - Give option to check whether word is already included in Anki deck
 #  - Add back translations to the pool of words to translate
 #  - Add a check for 1-to-1 translations in the other direction
 
@@ -29,9 +34,10 @@ def check_one_to_one(word, top_translation, source_lang, target_lang):
     )
     back_translation_objects = list(reverso_context_api.get_translations())
     back_translation_strings = [t.translation for t in back_translation_objects]
-    # print(
-    #     f"Back translations for {top_translation}: {' '.join(back_translation_strings)}\n"
-    # )
+    logging.debug(
+        f"Back translations for {top_translation}: {' '.join(back_translation_strings)}",
+        extra={"postfix": "\n"},
+    )
     if back_translation_strings:
         top_back_translation = back_translation_strings[0]
         if top_back_translation == word:
@@ -58,8 +64,33 @@ def get_words_from_context_sentences(
     for sentence in doc.sentences:
         for word in sentence.words:
             all_lemmas.add(word.lemma)
-    # print(f"Words to translate: {' '.join(all_lemmas)}\n")
+    logging.debug(
+        f"Words to translate: {' '.join(all_lemmas)}", extra={"postfix": "\n"}
+    )
     return all_lemmas
+
+
+def report_progress(
+    iteration: int,
+    words_to_translate_count: int,
+    scraped_words_count: int,
+    translations_count: int,
+    one_to_one_count: int,
+):
+    logging.info(f"Iteration {iteration}", extra={"prefix": "\n"})
+    logging.info(f"Words to translate: {words_to_translate_count}")
+    logging.info(f"Scraped words: {scraped_words_count}")
+    logging.info(f"Translations: {translations_count}")
+    translated_proportion = translations_count / scraped_words_count
+    logging.info(
+        f"Proportion of translations to scraped words: {translated_proportion*100:.3g}%"
+    )
+    logging.info(f"One-to-one translations: {one_to_one_count}")
+    one_to_one_proportion = one_to_one_count / translations_count
+    logging.info(
+        f"Proportion of 1-to-1 translations: {one_to_one_proportion*100:.3g}%",
+        extra={"postfix": "\n"},
+    )
 
 
 def run(
@@ -69,13 +100,12 @@ def run(
     iteration_count: int,
     source_nlp: stanza.Pipeline,
 ):
-    print("Starting word: " + start_word)
-    print()
+    logging.info(f"Starting word: {start_word}", extra={"postfix": "\n"})
 
     SLEEP_TIME = 1
     REPORT_INTERVAL = 25
 
-    # Each word has a key in a dictionary. The value is a list of Translation namedtuples.
+    # Each processed word has a key in a dictionary. The value is a list of Translation namedtuples.
     translations = {}
     # Note 1-to-1 translations
     one_to_one = {}
@@ -96,7 +126,10 @@ def run(
         # Get translations
         translation_objects = list(context_api.get_translations())
         translation_strings = [t.translation for t in translation_objects]
-        # print(f"Translations for {current_word}: {' '.join(translation_strings)}\n")
+        logging.debug(
+            f"Translations for {current_word}: {' '.join(translation_strings)}",
+            extra={"postfix": "\n"},
+        )
         translations[current_word] = translation_objects
 
         # Check if the word has a 1-to-1 translation
@@ -105,7 +138,9 @@ def run(
             current_word, top_translation, source_lang, target_lang
         ):
             one_to_one[current_word] = top_translation
-            print(f"1-to-1: {current_word} -> {top_translation}")
+            logging.info(f"1-to-1: {current_word} -> {top_translation}")
+        else:
+            logging.info(current_word)
 
         # Add new words to the pool
         batch_of_words = get_words_from_context_sentences(
@@ -118,16 +153,16 @@ def run(
 
         # Set the next word to translate
         current_word = words_to_translate.popleft()
-        # print(f"Next word: {current_word}\n")
 
         # Report progress
         if i % REPORT_INTERVAL == 0:
-            print()
-            print(f"Iteration {i}")
-            print(f"Words to translate: {len(words_to_translate)}")
-            print(f"Scraped words: {len(scraped_words)}")
-            print(f"One-to-one translations: {len(one_to_one)}")
-            print()
+            report_progress(
+                i,
+                words_to_translate_count=len(words_to_translate),
+                scraped_words_count=len(scraped_words),
+                translations_count=len(translations),
+                one_to_one_count=len(one_to_one),
+            )
         time.sleep(SLEEP_TIME)
 
 
@@ -138,14 +173,16 @@ if __name__ == "__main__":
     iteration_count = 1000
     stanza_verbose = False
 
+    custom_logging.set_up_logging()
+
     # initialize stanza using source language, without downloading when not necessary
-    print("Initializing NLP pipeline...")
+    logging.info("Initializing NLP pipeline...")
     source_nlp = stanza.Pipeline(
         source_lang,
         download_method=DownloadMethod.REUSE_RESOURCES,
         verbose=stanza_verbose,
     )
-    print("Done.\n")
+    logging.info("Done.", extra={"postfix": "\n"})
 
     # run with new parameter source_nlp
     run(
