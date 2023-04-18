@@ -19,7 +19,6 @@ from data_models import OneToOneRecord
 
 
 # TODO
-#  - Use Translation objects instead of OneToOneRecord objects
 #  - Periodically sort words to translate by length. Shorter words tend to be more frequent.
 #  - Give option to check whether word is already included in Anki deck
 #  - Analyze and visualize scraping progress
@@ -96,8 +95,10 @@ def check_one_to_one(
         # Or the original word doesn't have a 1-to-1 translation according to Reverso Context
         return None
     else:
-        frequency = top_back_translation_object.frequency
-        record = OneToOneRecord(original_word, frequency, top_translation_string)
+        original_word_frequency = top_back_translation_object.frequency
+        record = OneToOneRecord(
+            original_word, original_word_frequency, top_translation_string
+        )
         return record
 
 
