@@ -1,4 +1,6 @@
+import dataclasses
 import itertools
+import json
 import logging
 import time
 from collections import deque
@@ -9,21 +11,18 @@ from reverso_api.context import ReversoContextAPI, Translation
 from stanza.pipeline.core import DownloadMethod
 
 import custom_logging
+from data_models import OneToOneRecord
 
 # The aim is to find words which have a 1-to-1 translation between the source and target languages.
-# Here, a 1-to-1 translation means that both words are each other's most frequent translation.
+# Here, a 1-to-1 translation means that the two words are each other's most frequent translation.
 # The words to be translated are gathered from the context sentences of the words previously processed.
 
 
 # TODO
-#  - Save one-to-one translations to a file
 #  - Compare words against translations from the same part of speech
+#  - Periodically sort words to translate by length. Shorter words tend to be more frequent.
 #  - Give option to check whether word is already included in Anki deck
 #  - Analyze and visualize scraping progress
-
-
-# (word, frequency), translation
-OneToOneRecord = tuple[tuple[str, int], str]
 
 
 def check_one_to_one(
@@ -48,7 +47,7 @@ def check_one_to_one(
         top_back_translation = top_back_translation_object.translation
         if top_back_translation == original_word:
             frequency = top_back_translation_object.frequency
-            record = ((original_word, frequency), top_translation)
+            record = OneToOneRecord(original_word, frequency, top_translation)
             return record
     return None
 
@@ -107,26 +106,54 @@ def report_progress(
     )
 
 
+def save_to_file(
+    source_lang: str,
+    target_lang: str,
+    translations: dict[str, list[Translation]],
+    one_to_one_translations: list[OneToOneRecord],
+    file_path: str,
+):
+    # Default JSON encoding converts namedtuples to lists and
+    # doesn't handle dataclasses, so convert them to dictionaries
+    translations_dicts = {
+        source_word: [t._asdict() for t in translation_list]
+        for source_word, translation_list in translations.items()
+    }
+    one_to_one_translations_dicts = [
+        dataclasses.asdict(trans) for trans in one_to_one_translations
+    ]
+    struct = {
+        "source_lang": source_lang,
+        "target_lang": target_lang,
+        "translations": translations_dicts,
+        "one_to_one_translations": one_to_one_translations_dicts,
+    }
+    with open(file_path, "w") as f:
+        json.dump(struct, f, indent=4)
+
+
 def run(
     start_word: str,
     source_lang: str,
     target_lang: str,
     iteration_count: int,
     source_nlp: stanza.Pipeline,
+    savefile_path: str,
 ):
     logging.info(f"Starting word: {start_word}", extra={"postfix": "\n"})
 
     SLEEP_TIME = 1
     REPORT_INTERVAL = 25
+    SAVE_INTERVAL = 100
 
     # Each processed word has a key in a dictionary. The value is a list of Translation namedtuples.
-    translations = {}
+    translations: dict[str, list[Translation]] = {}
     # Note 1-to-1 translations
     one_to_one_translations: list[OneToOneRecord] = []
     # A pool of words is established
-    words_to_translate = deque()
+    words_to_translate: deque[str] = deque()
     # Words already scraped
-    scraped_words = set()
+    scraped_words: set[str] = set()
 
     current_word = start_word
 
@@ -154,7 +181,7 @@ def run(
             logging.info(current_word)
         else:
             one_to_one_translations.append(record)
-            top_translation = record[1]
+            top_translation = record.translation
             logging.info(f"1-to-1: {current_word} -> {top_translation}")
         logging.debug(one_to_one_translations)
 
@@ -179,6 +206,14 @@ def run(
                 translations_count=len(translations),
                 one_to_one_count=len(one_to_one_translations),
             )
+        if i % SAVE_INTERVAL == 0:
+            save_to_file(
+                source_lang,
+                target_lang,
+                translations,
+                one_to_one_translations,
+                savefile_path,
+            )
         time.sleep(SLEEP_TIME)
 
 
@@ -188,10 +223,11 @@ if __name__ == "__main__":
     target_lang = "en"
     iteration_count = 1000
     stanza_verbose = False
+    savefile_path = "translations.json"
 
     custom_logging.set_up_logging()
 
-    # initialize stanza using source language, without downloading when not necessary
+    # Initialize stanza using source language, without downloading when not necessary
     logging.info("Initializing NLP pipeline...")
     source_nlp = stanza.Pipeline(
         source_lang,
@@ -200,11 +236,12 @@ if __name__ == "__main__":
     )
     logging.info("Done.", extra={"postfix": "\n"})
 
-    # run with new parameter source_nlp
+    # Run with new parameter source_nlp
     run(
         start_word,
         source_lang,
         target_lang,
         iteration_count,
         source_nlp,
+        savefile_path,
     )
