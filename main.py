@@ -19,37 +19,86 @@ from data_models import OneToOneRecord
 
 
 # TODO
-#  - Compare words against translations from the same part of speech
+#  - Use Translation objects instead of OneToOneRecord objects
 #  - Periodically sort words to translate by length. Shorter words tend to be more frequent.
 #  - Give option to check whether word is already included in Anki deck
 #  - Analyze and visualize scraping progress
 
 
+def part_of_speech_equivalence(pos1: str, pos2: str) -> bool:
+    # Returns True if the two parts of speech are equivalent
+    def _equivalent(_pos1: str, _pos2: str) -> bool:
+        equivalence_classes = [
+            ("nn.", "nm.", "nf.", "n.", "npl.", "nnpl.", "nmpl.", "nfpl."),
+        ]
+        if _pos1 == _pos2:
+            return True
+        for equivalence_class in equivalence_classes:
+            if _pos1 in equivalence_class and _pos2 in equivalence_class:
+                return True
+        return False
+
+    if (
+        pos1 is None
+        or pos2 is None
+        or (isinstance(pos1, str) and pos1.strip() == "")
+        or (isinstance(pos2, str) and pos2.strip() == "")
+    ):
+        return False
+    pos1_list = pos1.split("/")
+    pos2_list = pos2.split("/")
+    for pos1, pos2 in itertools.product(pos1_list, pos2_list):
+        if not _equivalent(pos1, pos2):
+            return False
+    return True
+
+
 def check_one_to_one(
     original_word: str,
-    translation_strings: list[str],
+    translations: list[Translation],
     source_lang: str,
     target_lang: str,
 ) -> OneToOneRecord | None:
+    # translations: the translations of the original word
     # Returns a 1-to-1 translation record or None if the word does not have a 1-to-1 translation
-    # Source and target languages have to be swapped
-    if not translation_strings:
+    if not translations:
         return None
-    top_translation = translation_strings[0]
+    top_translation_object = translations[0]
+    top_translation_string = top_translation_object.translation
+    # Source and target languages have to be swapped
     reverso_context_api = ReversoContextAPI(
-        source_text=top_translation,
+        source_text=top_translation_string,
         source_lang=target_lang,
         target_lang=source_lang,
     )
     back_translation_objects = list(reverso_context_api.get_translations())
-    if back_translation_objects:
-        top_back_translation_object = back_translation_objects[0]
-        top_back_translation = top_back_translation_object.translation
-        if top_back_translation == original_word:
-            frequency = top_back_translation_object.frequency
-            record = OneToOneRecord(original_word, frequency, top_translation)
-            return record
-    return None
+    if not back_translation_objects:
+        return None
+    top_back_translation_object = back_translation_objects[0]
+    filtered_back_translation_objects = [
+        t
+        for t in back_translation_objects
+        if part_of_speech_equivalence(
+            t.part_of_speech, top_translation_object.part_of_speech
+        )
+    ]
+    match = None
+    # Either the top translation is the original word
+    if top_back_translation_object.translation == original_word:
+        match = top_back_translation_object
+    # Or the top translation within the same part of speech is the original word
+    elif (
+        filtered_back_translation_objects
+        and filtered_back_translation_objects[0].translation == original_word
+    ):
+        match = filtered_back_translation_objects[0]
+    if match is None:
+        # Or the original word doesn't have a 1-to-1 translation according to Reverso Context
+        return None
+    else:
+        frequency = top_back_translation_object.frequency
+        record = OneToOneRecord(original_word, frequency, top_translation_string)
+        return record
 
 
 def clean_up_text(text: str, source_nlp: stanza.Pipeline):
@@ -175,7 +224,7 @@ def run(
 
         # Check if the word has a 1-to-1 translation, and if so, add it to the list
         record = check_one_to_one(
-            current_word, translation_strings, source_lang, target_lang
+            current_word, translation_objects, source_lang, target_lang
         )
         if record is None:
             logging.info(current_word)
