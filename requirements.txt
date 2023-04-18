@@ -1,2 +1,3 @@
-reverso-api
+# Fork with request timeouts and retries added
+git+https://github.com/jparta/pyreverso@master#egg=reverso-api
 stanza
