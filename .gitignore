@@ -1,3 +1,9 @@
+# Python specific
 __pycache__
+
+# Editor
+.vscode
+
+# Outputs
 *.log
 translations.json
